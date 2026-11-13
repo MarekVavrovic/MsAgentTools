@@ -1,0 +1,177 @@
+﻿@page "/toolpage"
+
+@using Microsoft.Agents.AI
+@using Microsoft.Extensions.AI
+@using MsAgentTools.Models
+@using OpenAI
+@using OpenAI.Chat
+
+<PageTitle>AI Agent Chat</PageTitle>
+
+<h3>AI Agent Chat</h3>
+
+<div class="mb-3">
+    <label for="userInput" class="form-label">Enter your question</label>
+
+    <input @bind="userPrompt"
+           @bind:event="oninput"
+           @onkeydown="HandleKeyDown"
+           id="userInput"
+           class="form-control"
+           placeholder="Ask me anything..."
+           disabled="@isBusy" />
+
+    <button @onclick="SubmitPrompt"
+            class="btn btn-primary mt-3"
+            disabled="@isBusy || string.IsNullOrWhiteSpace(userPrompt)">
+        @(isBusy ? "Generating..." : "Send to ChatGPT")
+    </button>
+
+    <button @onclick="ClearAll"
+            class="btn btn-secondary mt-3"
+            disabled="@isBusy">
+        Clear All
+    </button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(errorMessage))
+{
+    <div class="alert alert-danger">
+        @errorMessage
+    </div>
+}
+
+@if (chatHistory.Count > 0)
+{
+    <div class="alert alert-info">
+
+        @foreach (var entry in chatHistory)
+        {
+            <div class="mb-3">
+
+                <strong>@entry.Role:</strong>
+
+                <div class="mt-1"> @((MarkupString)entry.Text) </div>
+
+            </div>
+        }
+
+    </div>
+}
+
+
+@code {
+    // User interface
+    private string userPrompt = string.Empty;
+    private bool isBusy;
+    private string? errorMessage;
+
+    // Conversation history
+    private List<(string Role, string Text)> chatHistory = new();
+
+    // OpenAI configuration
+    private const string apiKey = "Add your API key here";
+    private const string model = "gpt-4o-mini";
+
+    // Agent Framework objects
+    private AIAgent? agent;
+    private AgentSession? session;
+
+    // Initialize the AI agent only once
+    private void InitializeAgent()
+    {
+        if (agent != null)
+            return;
+
+        OpenAIClient client = new OpenAIClient(apiKey);
+
+        agent = client.GetChatClient(model).AsAIAgent(
+            instructions: "You are a friendly AI assistant. " +
+                          "Answer questions clearly and helpfully. " +
+                          "Format your responses using HTML.",
+            tools:
+            [
+                AIFunctionFactory.Create(Tools.CurrentDateAndTime,"current_date_and_time"),
+                AIFunctionFactory.Create(Tools.CurrentTimezone,"current_timezone")
+            ]
+        );
+    }
+
+    // Send user prompt
+    private async Task SubmitPrompt()
+    {
+        if (isBusy || string.IsNullOrWhiteSpace(userPrompt))
+            return;
+
+        isBusy = true;
+        errorMessage = null;
+
+        string currentPrompt = userPrompt.Trim();
+        userPrompt = string.Empty;
+
+        // Add user message to conversation history
+        chatHistory.Add(("User", currentPrompt));
+
+        // Add an empty assistant message for streaming
+        int assistantIndex = chatHistory.Count;
+        chatHistory.Add(("Assistant", string.Empty));
+
+        try
+        {
+            InitializeAgent();
+
+            // Create a new conversation session
+            session ??= await agent!.CreateSessionAsync();
+            string responseText = string.Empty;
+
+            // Stream the AI response
+            await foreach (AgentResponseUpdate update in agent!.RunStreamingAsync(currentPrompt, session))
+            {
+                if (!string.IsNullOrEmpty(update.Text))
+                {
+                    responseText += update.Text;
+                    
+                    chatHistory[assistantIndex] = ("Assistant", responseText); // Update assistant message
+                    await InvokeAsync(StateHasChanged); // Refresh Blazor UI
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Something went wrong: {ex.Message}";
+
+            chatHistory[assistantIndex] = ("Assistant", "Sorry, an error occurred.");
+        }
+        finally
+        {
+            isBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // Send prompt using Enter
+    private async Task HandleKeyDown(
+        Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !isBusy)
+        {
+            await SubmitPrompt();
+        }
+    }
+
+    // Clear conversation
+    private void ClearAll()
+    {
+        if (isBusy)
+            return;
+
+        userPrompt = string.Empty;
+        chatHistory.Clear();
+        errorMessage = null;
+
+        // Reset conversation session
+        session = null;
+    }
+
+
+}
